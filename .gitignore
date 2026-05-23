@@ -1,0 +1,18 @@
+# Node
+web/node_modules/
+web/dist/
+web/.env
+web/.env.local
+
+# Go
+server/server
+server/tmp/
+*.test
+*.out
+
+# OS
+.DS_Store
+
+# Editors
+.vscode/
+.idea/

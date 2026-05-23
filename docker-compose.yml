@@ -1,0 +1,37 @@
+services:
+  server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile.dev
+    working_dir: /workspace
+    volumes:
+      - ./server:/workspace
+      - go-mod-cache:/go/pkg/mod
+      - go-build-cache:/root/.cache/go-build
+    environment:
+      PORT: "8080"
+      ALLOW_ALL_ORIGINS: "1"
+      GRACE_TTL_MS: "15000"
+    ports:
+      - "18765:8080"
+
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile.dev
+    working_dir: /workspace
+    volumes:
+      - ./web:/workspace
+      - web-node-modules:/workspace/node_modules
+    environment:
+      BACKEND_HOST: server
+      BACKEND_PORT: "8080"
+    ports:
+      - "5173:5173"
+    depends_on:
+      - server
+
+volumes:
+  go-mod-cache:
+  go-build-cache:
+  web-node-modules:

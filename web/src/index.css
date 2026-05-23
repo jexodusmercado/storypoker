@@ -1,0 +1,47 @@
+@import "tailwindcss";
+
+@theme {
+  /* surfaces */
+  --color-canvas: #faf8f2;
+  --color-surface: #ffffff;
+  --color-surface-muted: #f4f1e8;
+
+  /* text */
+  --color-ink: #2e3a35;
+  --color-ink-muted: #6e7771;
+  --color-ink-soft: #97a09a;
+
+  /* borders */
+  --color-divider: #e0dbcf;
+  --color-divider-strong: #c9c2b0;
+
+  /* sage — decorative + interactive */
+  --color-sage: #6e8e76;
+  --color-sage-strong: #4a6b52;
+  --color-sage-soft: #e1ece2;
+  --color-sage-medium: #b5cdb8;
+
+  /* warm wood — table rim */
+  --color-driftwood: #c9a98a;
+
+  /* terracotta — danger */
+  --color-terracotta: #b6624e;
+  --color-terracotta-soft: #faefea;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    @apply bg-canvas text-ink antialiased;
+    font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  }
+  h1,
+  h2,
+  h3 {
+    letter-spacing: -0.01em;
+  }
+}
