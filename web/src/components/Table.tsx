@@ -38,7 +38,7 @@ export function OvalTable({
   })
 
   return (
-    <div className="relative w-full max-w-3xl mx-auto aspect-[4/3] md:aspect-[5/3] my-4">
+    <div className="relative w-full max-w-3xl mx-auto aspect-[4/3] md:aspect-[5/3] mt-4 mb-8 md:my-4">
       {/* Rim — driftwood band, drops a soft shadow onto the canvas */}
       <div className="absolute inset-0 bg-driftwood rounded-[50%] shadow-lg shadow-ink/10" />
 
@@ -72,8 +72,11 @@ export function OvalTable({
           // index 0 is self at the bottom of the oval; the rest fan
           // counter-clockwise around the rim
           const angle = (i / ordered.length) * 2 * Math.PI + Math.PI / 2
-          const x = 50 + 44 * Math.cos(angle)
-          const y = 50 + 44 * Math.sin(angle)
+          // Radius pulled in (was 44) so cards sit on the felt with clearance
+          // from the rim; especially important on mobile where the container
+          // is shorter and the card column overflows tight aspect ratios.
+          const x = 50 + 36 * Math.cos(angle)
+          const y = 50 + 36 * Math.sin(angle)
           return (
             <motion.div
               key={p.id}

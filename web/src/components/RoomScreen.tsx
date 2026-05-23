@@ -479,10 +479,12 @@ function Deck({
   disabled: boolean
   onPick: (c: Card, source: HTMLElement) => void
 }) {
+  const hasPicked = myVote !== null
   return (
     <div className="flex flex-wrap gap-3 justify-center">
       {deck.map((card) => {
         const picked = card === myVote
+        const dimmed = hasPicked && !picked
         return (
           <motion.button
             key={card}
@@ -491,13 +493,24 @@ function Deck({
             onClick={(e) => onPick(card, e.currentTarget)}
             aria-label={`Vote ${card}${picked ? ' (selected)' : ''}`}
             aria-pressed={picked}
-            animate={{ y: picked ? -10 : 0 }}
-            whileHover={!disabled ? { y: picked ? -12 : -6 } : undefined}
-            whileTap={!disabled ? { scale: 0.94, y: picked ? -8 : -3 } : undefined}
+            animate={{
+              y: picked ? -14 : 0,
+              opacity: dimmed ? 0.45 : 1,
+            }}
+            whileHover={
+              !disabled
+                ? { y: picked ? -16 : -6, opacity: 1 }
+                : undefined
+            }
+            whileTap={
+              !disabled
+                ? { scale: 0.94, y: picked ? -10 : -3 }
+                : undefined
+            }
             transition={{ type: 'spring', stiffness: 420, damping: 18 }}
-            className={`w-14 h-20 md:w-16 md:h-24 rounded-lg text-xl md:text-2xl font-bold border-2 ${
+            className={`w-14 h-20 lg:w-16 lg:h-24 rounded-lg text-xl lg:text-2xl font-bold border-2 transition-colors ${
               picked
-                ? 'bg-sage-strong border-sage shadow-lg shadow-sage-strong/40 text-white'
+                ? 'bg-sage-strong border-sage shadow-xl shadow-sage-strong/50 ring-4 ring-sage-strong/20 text-white'
                 : 'bg-surface border-divider hover:border-sage/60 hover:bg-surface-muted text-ink'
             } disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sage`}
           >
