@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { AnimatePresence, motion } from 'motion/react'
 import { EntryScreen } from './components/EntryScreen'
 import { NamePromptModal } from './components/NamePromptModal'
 import { RoomScreen } from './components/RoomScreen'
@@ -56,43 +57,65 @@ export default function App() {
     setSession(null)
   }
 
-  if (session) {
-    return (
-      <RoomScreen
-        roomId={session.roomId}
-        name={session.name}
-        deck={session.deck}
-        spectator={session.spectator}
-        create={session.create}
-        onLeave={goToEntry}
-      />
-    )
-  }
-
-  if (urlRoom) {
-    return (
-      <NamePromptModal
-        roomId={urlRoom}
-        onSubmit={(name) => {
-          writeStoredName(name)
-          setSession({
-            roomId: urlRoom,
-            name,
-            deck: [],
-            spectator: false,
-            create: false,
-          })
-        }}
-        onCancel={goToEntry}
-      />
-    )
-  }
+  const fadeTransition = { duration: 0.25, ease: 'easeInOut' as const }
 
   return (
-    <EntryScreen
-      onJoin={(roomId, name, deck, spectator, create) =>
-        setSession({ roomId, name, deck, spectator, create })
-      }
-    />
+    <AnimatePresence mode="wait">
+      {session ? (
+        <motion.div
+          key="room"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={fadeTransition}
+        >
+          <RoomScreen
+            roomId={session.roomId}
+            name={session.name}
+            deck={session.deck}
+            spectator={session.spectator}
+            create={session.create}
+            onLeave={goToEntry}
+          />
+        </motion.div>
+      ) : urlRoom ? (
+        <motion.div
+          key="modal"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={fadeTransition}
+        >
+          <NamePromptModal
+            roomId={urlRoom}
+            onSubmit={(name) => {
+              writeStoredName(name)
+              setSession({
+                roomId: urlRoom,
+                name,
+                deck: [],
+                spectator: false,
+                create: false,
+              })
+            }}
+            onCancel={goToEntry}
+          />
+        </motion.div>
+      ) : (
+        <motion.div
+          key="entry"
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -8 }}
+          transition={fadeTransition}
+        >
+          <EntryScreen
+            onJoin={(roomId, name, deck, spectator, create) =>
+              setSession({ roomId, name, deck, spectator, create })
+            }
+          />
+        </motion.div>
+      )}
+    </AnimatePresence>
   )
 }

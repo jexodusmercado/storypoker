@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
+import { motion } from 'motion/react'
 import { useRoom, type ConnectionStatus } from '../useRoom'
 import type { Card, HistoryEntry, ParticipantPublic } from '../protocol'
 import { OvalTable, SpectatorsStrip } from './Table'
+import { FlightCard, type FlightSpec } from './FlightCard'
 import { computeOutliers } from '../voteAnalysis'
 
 interface Props {
@@ -44,6 +46,25 @@ export function RoomScreen({
 
   const me = state?.participants.find((p) => p.id === participantId) ?? null
   const myVote = me?.vote ?? null
+
+  const [flight, setFlight] = useState<FlightSpec | null>(null)
+  const flightIdRef = useRef(0)
+
+  const handleVote = (card: Card, sourceEl: HTMLElement) => {
+    const target = document.querySelector<HTMLElement>('[data-self-card]')
+    if (target) {
+      const from = sourceEl.getBoundingClientRect()
+      const to = target.getBoundingClientRect()
+      flightIdRef.current += 1
+      setFlight({
+        id: flightIdRef.current,
+        card,
+        from: { x: from.left, y: from.top, width: from.width, height: from.height },
+        to: { x: to.left, y: to.top, width: to.width, height: to.height },
+      })
+    }
+    vote(card)
+  }
 
   const isJoined = status === 'joined'
   const showReconnectBanner = !isJoined && state !== null
@@ -90,6 +111,13 @@ export function RoomScreen({
 
   return (
     <div className="min-h-full flex flex-col p-4 sm:p-6 gap-4 sm:gap-6 max-w-4xl mx-auto w-full">
+      {flight && (
+        <FlightCard
+          key={flight.id}
+          spec={flight}
+          onComplete={() => setFlight(null)}
+        />
+      )}
       <header className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-xl font-medium flex items-center gap-2 flex-wrap text-ink">
           <span>Room</span>
@@ -212,7 +240,7 @@ export function RoomScreen({
               deck={state.deck}
               myVote={myVote}
               disabled={!isJoined || state.revealed}
-              onPick={vote}
+              onPick={handleVote}
             />
           )}
 
@@ -449,28 +477,32 @@ function Deck({
   deck: Card[]
   myVote: Card | null
   disabled: boolean
-  onPick: (c: Card) => void
+  onPick: (c: Card, source: HTMLElement) => void
 }) {
   return (
     <div className="flex flex-wrap gap-3 justify-center">
       {deck.map((card) => {
         const picked = card === myVote
         return (
-          <button
+          <motion.button
             key={card}
             type="button"
             disabled={disabled}
-            onClick={() => onPick(card)}
+            onClick={(e) => onPick(card, e.currentTarget)}
             aria-label={`Vote ${card}${picked ? ' (selected)' : ''}`}
             aria-pressed={picked}
-            className={`w-14 h-20 md:w-16 md:h-24 rounded-lg text-xl md:text-2xl font-bold transition-all border-2 ${
+            animate={{ y: picked ? -10 : 0 }}
+            whileHover={!disabled ? { y: picked ? -12 : -6 } : undefined}
+            whileTap={!disabled ? { scale: 0.94, y: picked ? -8 : -3 } : undefined}
+            transition={{ type: 'spring', stiffness: 420, damping: 18 }}
+            className={`w-14 h-20 md:w-16 md:h-24 rounded-lg text-xl md:text-2xl font-bold border-2 ${
               picked
-                ? 'bg-sage-strong border-sage -translate-y-2 shadow-md shadow-sage-strong/30 text-white'
-                : 'bg-surface border-divider hover:border-sage/60 hover:bg-surface-muted hover:-translate-y-1 text-ink'
-            } disabled:opacity-40 disabled:cursor-not-allowed disabled:translate-y-0 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sage`}
+                ? 'bg-sage-strong border-sage shadow-lg shadow-sage-strong/40 text-white'
+                : 'bg-surface border-divider hover:border-sage/60 hover:bg-surface-muted text-ink'
+            } disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sage`}
           >
             {card}
-          </button>
+          </motion.button>
         )
       })}
     </div>
