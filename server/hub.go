@@ -8,15 +8,36 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"golang.org/x/time/rate"
 )
 
-const writeTimeout = 5 * time.Second
+const (
+	writeTimeout = 5 * time.Second
+
+	// DoS knobs.
+	maxRooms      = 10000         // hard cap on concurrent rooms in the hub
+	staleRoomTTL  = 4 * time.Hour // a room with no activity for this long gets evicted
+	sweepInterval = 15 * time.Minute
+
+	// Per-conn rate limit. 20 messages/sec sustained is ~4× peak realistic
+	// usage; burst 60 covers quick double-clicks and short bursts.
+	rateLimitPerSec = 20
+	rateLimitBurst  = 60
+)
 
 type Conn struct {
 	ws            *websocket.Conn
 	participantID string
 	roomID        string
 	sendMu        sync.Mutex
+	limiter       *rate.Limiter
+}
+
+func NewConn(ws *websocket.Conn) *Conn {
+	return &Conn{
+		ws:      ws,
+		limiter: rate.NewLimiter(rate.Limit(rateLimitPerSec), rateLimitBurst),
+	}
 }
 
 func (c *Conn) Send(msg Outbound) error {
@@ -45,17 +66,27 @@ type roomEntry struct {
 }
 
 func NewHub(graceTTL time.Duration) *Hub {
-	return &Hub{
+	h := &Hub{
 		rooms:    make(map[string]*roomEntry),
 		graceTTL: graceTTL,
 	}
+	go h.sweepStaleRoomsLoop()
+	return h
 }
 
+// GetOrCreateRoom returns the existing room with that id, or creates a new one.
+// Returns nil if the hub is at the maxRooms cap and creation would be required.
+// Existing rooms are returned regardless of the cap (the cap protects against
+// unbounded creation, not against joining).
 func (h *Hub) GetOrCreateRoom(id string, deck []Card) *Room {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if e, ok := h.rooms[id]; ok {
 		return e.room
+	}
+	if len(h.rooms) >= maxRooms {
+		log.Printf("hub at capacity (%d rooms); refusing to create new room", len(h.rooms))
+		return nil
 	}
 	e := &roomEntry{
 		room:    NewRoom(id, deck),
@@ -244,7 +275,63 @@ func (h *Hub) Broadcast(roomID string) {
 		state := room.SnapshotFor(c.participantID)
 		msg := Outbound{Type: MsgState, Payload: state}
 		if err := c.Send(msg); err != nil {
-			log.Printf("send to %s failed: %v", c.participantID, err)
+			log.Printf("send to %s failed: %v", redactID(c.participantID), err)
 		}
+	}
+}
+
+// redactID returns a short prefix of a participant ID for logs. Full IDs
+// double as rejoin session tokens, so we keep them out of log streams that
+// might be exported (Railway log drains, etc.).
+func redactID(id string) string {
+	if len(id) <= 6 {
+		return "…"
+	}
+	return id[:6] + "…"
+}
+
+// sweepStaleRoomsLoop runs forever, evicting rooms that haven't seen activity
+// in staleRoomTTL. Catches "forgotten browser tab" zombies — rooms with an
+// active ws connection but no user interaction for hours.
+func (h *Hub) sweepStaleRoomsLoop() {
+	t := time.NewTicker(sweepInterval)
+	defer t.Stop()
+	for range t.C {
+		h.sweepStaleRooms()
+	}
+}
+
+func (h *Hub) sweepStaleRooms() {
+	cutoff := time.Now().Add(-staleRoomTTL)
+
+	h.mu.Lock()
+	type victim struct {
+		id    string
+		entry *roomEntry
+	}
+	victims := make([]victim, 0)
+	for id, e := range h.rooms {
+		if e.room.LastActivityAt().Before(cutoff) {
+			victims = append(victims, victim{id: id, entry: e})
+		}
+	}
+	for _, v := range victims {
+		// Stop timers and close conns under the hub mu so no one else can
+		// observe a half-deleted entry.
+		if v.entry.revealTimer != nil {
+			v.entry.revealTimer.Stop()
+		}
+		for _, timer := range v.entry.pending {
+			timer.Stop()
+		}
+		for _, c := range v.entry.conns {
+			_ = c.ws.Close(websocket.StatusGoingAway, "session expired")
+		}
+		delete(h.rooms, v.id)
+	}
+	h.mu.Unlock()
+
+	for _, v := range victims {
+		log.Printf("room evicted (stale): %s", v.id)
 	}
 }

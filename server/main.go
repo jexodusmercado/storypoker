@@ -23,6 +23,13 @@ const defaultGraceMs = 15000
 
 const revealCountdown = 3 * time.Second
 
+// Input size caps. Names and room codes show up in broadcasts and live in
+// memory as long as the room does, so unbounded inputs are a real DoS lever.
+const (
+	maxNameLen   = 64
+	maxRoomIDLen = 64
+)
+
 func main() {
 	graceMs := defaultGraceMs
 	if v := os.Getenv("GRACE_TTL_MS"); v != "" {
@@ -82,7 +89,7 @@ func wsHandler(hub *Hub, opts *websocket.AcceptOptions) http.HandlerFunc {
 		}
 		defer ws.Close(websocket.StatusInternalError, "internal error")
 
-		conn := &Conn{ws: ws}
+		conn := NewConn(ws)
 		ctx := r.Context()
 
 		pingCtx, cancelPing := context.WithCancel(ctx)
@@ -99,6 +106,11 @@ func wsHandler(hub *Hub, opts *websocket.AcceptOptions) http.HandlerFunc {
 					log.Printf("ws read err: %v", err)
 				}
 				break
+			}
+
+			if !conn.limiter.Allow() {
+				sendError(conn, "too many messages, slow down")
+				continue
 			}
 
 			var in Inbound
@@ -149,6 +161,14 @@ func handleJoin(hub *Hub, c *Conn, raw json.RawMessage) {
 		sendError(c, "roomId and name required")
 		return
 	}
+	if len(p.RoomID) > maxRoomIDLen {
+		sendError(c, "room code too long")
+		return
+	}
+	if len(p.Name) > maxNameLen {
+		sendError(c, "name too long")
+		return
+	}
 
 	if !p.Create && hub.Room(p.RoomID) == nil {
 		sendError(c, "room not found")
@@ -157,13 +177,22 @@ func handleJoin(hub *Hub, c *Conn, raw json.RawMessage) {
 
 	deck := SanitizeDeck(p.Deck)
 	room := hub.GetOrCreateRoom(p.RoomID, deck)
+	if room == nil {
+		sendError(c, "server is full, please try again later")
+		return
+	}
 
 	var participantID string
 	if p.RejoinID != "" && room.HasParticipant(p.RejoinID) {
 		participantID = p.RejoinID
 		room.SetConnected(participantID, true)
 	} else {
-		participantID = room.AddParticipant(p.Name, p.Spectator).ID
+		participant, err := room.AddParticipant(p.Name, p.Spectator)
+		if err != nil {
+			sendError(c, "room is full")
+			return
+		}
+		participantID = participant.ID
 	}
 
 	c.roomID = p.RoomID

@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -17,6 +18,7 @@ var (
 	ErrCardNotInDeck       = errors.New("card not in deck")
 	ErrVotingClosed        = errors.New("voting closed after reveal")
 	ErrSpectatorCannotVote = errors.New("spectators cannot vote")
+	ErrRoomFull            = errors.New("room is full")
 )
 
 type Participant struct {
@@ -39,22 +41,42 @@ type Room struct {
 	History      []HistoryEntry
 	Participants map[string]*Participant
 	mu           sync.Mutex
+
+	// lastActivity is read by the hub's sweeper goroutine without holding mu,
+	// so we keep it as an atomic and update on every state-mutating method.
+	lastActivity atomic.Int64 // unix nanos
 }
 
 const (
-	maxStoryLen   = 200
-	maxHistoryLen = 100
+	maxStoryLen            = 200
+	maxHistoryLen          = 100
+	maxParticipantsPerRoom = 50
 )
 
 func NewRoom(id string, deck []Card) *Room {
 	if len(deck) == 0 {
 		deck = DefaultDeck
 	}
-	return &Room{
+	r := &Room{
 		ID:           id,
 		Deck:         deck,
 		Participants: make(map[string]*Participant),
 	}
+	r.lastActivity.Store(time.Now().UnixNano())
+	return r
+}
+
+// touchActivity records the current time as the room's last meaningful state
+// change. Called by every mutating method below. Read by the hub's sweeper
+// goroutine via LastActivityAt — atomic because that reader doesn't take r.mu.
+func (r *Room) touchActivity() {
+	r.lastActivity.Store(time.Now().UnixNano())
+}
+
+// LastActivityAt returns the timestamp of the most recent state mutation.
+// Safe to call without r.mu.
+func (r *Room) LastActivityAt() time.Time {
+	return time.Unix(0, r.lastActivity.Load())
 }
 
 const (
@@ -85,9 +107,12 @@ func SanitizeDeck(deck []Card) []Card {
 	return out
 }
 
-func (r *Room) AddParticipant(name string, spectator bool) *Participant {
+func (r *Room) AddParticipant(name string, spectator bool) (*Participant, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if len(r.Participants) >= maxParticipantsPerRoom {
+		return nil, ErrRoomFull
+	}
 	now := time.Now()
 	p := &Participant{
 		ID:        newParticipantID(),
@@ -98,7 +123,8 @@ func (r *Room) AddParticipant(name string, spectator bool) *Participant {
 		LastSeen:  now,
 	}
 	r.Participants[p.ID] = p
-	return p
+	r.touchActivity()
+	return p, nil
 }
 
 func (r *Room) RemoveParticipant(id string) {
@@ -124,6 +150,7 @@ func (r *Room) SetConnected(id string, connected bool) {
 	p.Connected = connected
 	if connected {
 		p.LastSeen = time.Now()
+		r.touchActivity()
 	}
 }
 
@@ -152,6 +179,7 @@ func (r *Room) SetVote(participantID string, card Card) error {
 	c := card
 	p.Vote = &c
 	p.LastSeen = time.Now()
+	r.touchActivity()
 
 	return nil
 }
@@ -170,6 +198,7 @@ func (r *Room) SetAutoReveal(enabled bool) (shouldRevealNow bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.AutoReveal = enabled
+	r.touchActivity()
 	return enabled && !r.Revealed && r.RevealAt == 0 && r.allVotersVotedLocked()
 }
 
@@ -185,6 +214,7 @@ func (r *Room) StartReveal(at int64) bool {
 		return false
 	}
 	r.RevealAt = at
+	r.touchActivity()
 	return true
 }
 
@@ -199,6 +229,7 @@ func (r *Room) CompleteReveal() bool {
 	}
 	r.Revealed = true
 	r.RevealAt = 0
+	r.touchActivity()
 	return true
 }
 
@@ -261,6 +292,7 @@ func (r *Room) Reset() {
 	for _, p := range r.Participants {
 		p.Vote = nil
 	}
+	r.touchActivity()
 }
 
 func (r *Room) Revote() {
@@ -271,6 +303,7 @@ func (r *Room) Revote() {
 	for _, p := range r.Participants {
 		p.Vote = nil
 	}
+	r.touchActivity()
 }
 
 func (r *Room) SetStory(s string) {
@@ -280,6 +313,7 @@ func (r *Room) SetStory(s string) {
 		s = s[:maxStoryLen]
 	}
 	r.Story = s
+	r.touchActivity()
 }
 
 // SnapshotFor returns a state payload tailored for a specific viewer.
