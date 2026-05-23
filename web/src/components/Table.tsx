@@ -77,6 +77,11 @@ export function OvalTable({
           // is shorter and the card column overflows tight aspect ratios.
           const x = 50 + 36 * Math.cos(angle)
           const y = 50 + 36 * Math.sin(angle)
+          // Centering via motion's `x`/`y` style props (percentages of self
+          // size) so motion combines the translate with its animated scale
+          // into one transform string. A plain `transform: translate(-50%,
+          // -50%)` in style would get clobbered the moment motion animates
+          // scale, pinning the card by its top-left corner instead.
           return (
             <motion.div
               key={p.id}
@@ -84,7 +89,8 @@ export function OvalTable({
               style={{
                 left: `${x}%`,
                 top: `${y}%`,
-                transform: 'translate(-50%, -50%)',
+                x: '-50%',
+                y: '-50%',
               }}
               initial={{ opacity: 0, scale: 0.5 }}
               animate={{ opacity: 1, scale: 1 }}
