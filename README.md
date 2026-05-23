@@ -92,8 +92,7 @@ BACKEND_PORT=8080 npm run dev
 │   │       └── ConsensusBurst.tsx  sage particle celebration on consensus
 │   └── vercel.json           Vercel build config
 ├── docker-compose.yml      dev environment (server + web)
-├── Makefile                one-line dev / lint / build commands
-└── CLAUDE.md               original build plan (kept as project north star)
+└── Makefile                one-line dev / lint / build commands
 ```
 
 ## License
