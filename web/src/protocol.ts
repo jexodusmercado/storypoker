@@ -12,6 +12,7 @@ export interface ParticipantPublic {
 export interface StatePayload {
   roomId: string
   revealed: boolean
+  revealAt: number
   autoReveal: boolean
   story: string
   deck: Card[]

@@ -52,6 +52,7 @@ type SetAutoRevealPayload struct {
 type StatePayload struct {
 	RoomID       string              `json:"roomId"`
 	Revealed     bool                `json:"revealed"`
+	RevealAt     int64               `json:"revealAt"` // unix ms; 0 unless countdown in progress
 	AutoReveal   bool                `json:"autoReveal"`
 	Story        string              `json:"story"`
 	Deck         []Card              `json:"deck"`

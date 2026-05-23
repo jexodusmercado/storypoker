@@ -21,6 +21,8 @@ const (
 
 const defaultGraceMs = 15000
 
+const revealCountdown = 3 * time.Second
+
 func main() {
 	graceMs := defaultGraceMs
 	if v := os.Getenv("GRACE_TTL_MS"); v != "" {
@@ -195,7 +197,11 @@ func handleVote(hub *Hub, c *Conn, raw json.RawMessage) {
 		sendError(c, err.Error())
 		return
 	}
-	hub.Broadcast(c.roomID)
+	if room.ShouldAutoReveal() {
+		hub.ScheduleReveal(c.roomID, revealCountdown)
+	} else {
+		hub.Broadcast(c.roomID)
+	}
 }
 
 func handleReveal(hub *Hub, c *Conn) {
@@ -203,13 +209,11 @@ func handleReveal(hub *Hub, c *Conn) {
 		sendError(c, "not in a room")
 		return
 	}
-	room := hub.Room(c.roomID)
-	if room == nil {
+	if hub.Room(c.roomID) == nil {
 		sendError(c, "room not found")
 		return
 	}
-	room.Reveal()
-	hub.Broadcast(c.roomID)
+	hub.ScheduleReveal(c.roomID, revealCountdown)
 }
 
 func handleReset(hub *Hub, c *Conn) {
@@ -222,6 +226,7 @@ func handleReset(hub *Hub, c *Conn) {
 		sendError(c, "room not found")
 		return
 	}
+	hub.CancelReveal(c.roomID)
 	room.Reset()
 	hub.Broadcast(c.roomID)
 }
@@ -236,6 +241,7 @@ func handleRevote(hub *Hub, c *Conn) {
 		sendError(c, "room not found")
 		return
 	}
+	hub.CancelReveal(c.roomID)
 	room.Revote()
 	hub.Broadcast(c.roomID)
 }
@@ -274,8 +280,11 @@ func handleSetAutoReveal(hub *Hub, c *Conn, raw json.RawMessage) {
 		sendError(c, "room not found")
 		return
 	}
-	room.SetAutoReveal(p.Enabled)
-	hub.Broadcast(c.roomID)
+	if room.SetAutoReveal(p.Enabled) {
+		hub.ScheduleReveal(c.roomID, revealCountdown)
+	} else {
+		hub.Broadcast(c.roomID)
+	}
 }
 
 func pingLoop(ctx context.Context, ws *websocket.Conn) {

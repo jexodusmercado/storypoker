@@ -99,14 +99,16 @@ export function RoomScreen({
             canAct={isJoined}
           />
         )
-      : (
-          <CenterIdle
-            votedCount={votedCount}
-            totalVoters={voters.length}
-            onReveal={reveal}
-            canAct={isJoined}
-          />
-        )
+      : state.revealAt > 0
+        ? <CenterCountdown revealAt={state.revealAt} />
+        : (
+            <CenterIdle
+              votedCount={votedCount}
+              totalVoters={voters.length}
+              onReveal={reveal}
+              canAct={isJoined}
+            />
+          )
     : null
 
   return (
@@ -239,7 +241,7 @@ export function RoomScreen({
             <Deck
               deck={state.deck}
               myVote={myVote}
-              disabled={!isJoined || state.revealed}
+              disabled={!isJoined || state.revealed || state.revealAt > 0}
               onPick={handleVote}
             />
           )}
@@ -301,6 +303,44 @@ function StoryInput({
       />
     </label>
   )
+}
+
+function CenterCountdown({ revealAt }: { revealAt: number }) {
+  const remaining = useCountdown(revealAt)
+  const display = remaining > 0 ? String(remaining) : 'Reveal!'
+  return (
+    <div className="text-center flex flex-col items-center gap-1">
+      <motion.div
+        key={display}
+        initial={{ scale: 0.4, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        exit={{ scale: 1.4, opacity: 0 }}
+        transition={{ type: 'spring', stiffness: 350, damping: 18 }}
+        className="text-5xl md:text-6xl font-bold text-sage-strong tabular-nums drop-shadow-[0_2px_6px_rgba(74,107,82,0.3)]"
+      >
+        {display}
+      </motion.div>
+      <div className="text-xs text-ink-muted uppercase tracking-wider">
+        Revealing
+      </div>
+    </div>
+  )
+}
+
+function useCountdown(revealAt: number): number {
+  const [remaining, setRemaining] = useState(() =>
+    Math.max(0, Math.ceil((revealAt - Date.now()) / 1000)),
+  )
+  useEffect(() => {
+    const tick = () => {
+      const ms = Math.max(0, revealAt - Date.now())
+      setRemaining(Math.ceil(ms / 1000))
+    }
+    tick()
+    const id = window.setInterval(tick, 100)
+    return () => window.clearInterval(id)
+  }, [revealAt])
+  return remaining
 }
 
 function CenterIdle({

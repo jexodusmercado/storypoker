@@ -33,6 +33,7 @@ type Room struct {
 	ID           string
 	Deck         []Card
 	Revealed     bool
+	RevealAt     int64 // unix ms; 0 unless a countdown is running
 	AutoReveal   bool
 	Story        string
 	History      []HistoryEntry
@@ -135,7 +136,7 @@ func (r *Room) IsEmpty() bool {
 func (r *Room) SetVote(participantID string, card Card) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.Revealed {
+	if r.Revealed || r.RevealAt > 0 {
 		return ErrVotingClosed
 	}
 	p, ok := r.Participants[participantID]
@@ -152,19 +153,70 @@ func (r *Room) SetVote(participantID string, card Card) error {
 	p.Vote = &c
 	p.LastSeen = time.Now()
 
-	if r.AutoReveal && r.allVotersVotedLocked() {
-		r.Revealed = true
-	}
 	return nil
 }
 
-func (r *Room) SetAutoReveal(enabled bool) {
+// ShouldAutoReveal reports whether the room state currently meets the
+// auto-reveal trigger (all non-spectator voters have voted, auto-reveal is on,
+// and nothing is already revealed or counting down). Caller is responsible for
+// scheduling the actual reveal countdown.
+func (r *Room) ShouldAutoReveal() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.AutoReveal && !r.Revealed && r.RevealAt == 0 && r.allVotersVotedLocked()
+}
+
+func (r *Room) SetAutoReveal(enabled bool) (shouldRevealNow bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.AutoReveal = enabled
-	if enabled && !r.Revealed && r.allVotersVotedLocked() {
-		r.Revealed = true
+	return enabled && !r.Revealed && r.RevealAt == 0 && r.allVotersVotedLocked()
+}
+
+// StartReveal marks the room as counting down. Returns false if a reveal is
+// already in progress, already done, or no one has voted yet (nothing to reveal).
+func (r *Room) StartReveal(at int64) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.Revealed || r.RevealAt > 0 {
+		return false
 	}
+	if !r.anyVoteLocked() {
+		return false
+	}
+	r.RevealAt = at
+	return true
+}
+
+// CompleteReveal flips Revealed to true and clears RevealAt. Returns false
+// if the countdown was cancelled (RevealAt already zero) so the caller can skip
+// the broadcast.
+func (r *Room) CompleteReveal() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.RevealAt == 0 {
+		return false
+	}
+	r.Revealed = true
+	r.RevealAt = 0
+	return true
+}
+
+// CancelReveal clears RevealAt without flipping Revealed. Safe to call when no
+// countdown is in progress.
+func (r *Room) CancelReveal() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.RevealAt = 0
+}
+
+func (r *Room) anyVoteLocked() bool {
+	for _, p := range r.Participants {
+		if p.Vote != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *Room) allVotersVotedLocked() bool {
@@ -179,12 +231,6 @@ func (r *Room) allVotersVotedLocked() bool {
 		}
 	}
 	return any
-}
-
-func (r *Room) Reveal() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.Revealed = true
 }
 
 func (r *Room) Reset() {
@@ -210,6 +256,7 @@ func (r *Room) Reset() {
 		}
 	}
 	r.Revealed = false
+	r.RevealAt = 0
 	r.Story = ""
 	for _, p := range r.Participants {
 		p.Vote = nil
@@ -220,6 +267,7 @@ func (r *Room) Revote() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.Revealed = false
+	r.RevealAt = 0
 	for _, p := range r.Participants {
 		p.Vote = nil
 	}
@@ -234,7 +282,11 @@ func (r *Room) SetStory(s string) {
 	r.Story = s
 }
 
-func (r *Room) Snapshot() StatePayload {
+// SnapshotFor returns a state payload tailored for a specific viewer.
+// Pre-reveal, the viewer sees their OWN vote (so the UI can show "you picked
+// 5"), while every other participant's vote is stripped to nil. Post-reveal,
+// all votes are populated. Empty viewerID = no personalization (legacy path).
+func (r *Room) SnapshotFor(viewerID string) StatePayload {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	parts := make([]ParticipantPublic, 0, len(r.Participants))
@@ -247,7 +299,7 @@ func (r *Room) Snapshot() StatePayload {
 			Spectator: p.Spectator,
 			Vote:      nil,
 		}
-		if r.Revealed && p.Vote != nil {
+		if p.Vote != nil && (r.Revealed || p.ID == viewerID) {
 			v := *p.Vote
 			pub.Vote = &v
 		}
@@ -266,6 +318,7 @@ func (r *Room) Snapshot() StatePayload {
 	return StatePayload{
 		RoomID:       r.ID,
 		Revealed:     r.Revealed,
+		RevealAt:     r.RevealAt,
 		AutoReveal:   r.AutoReveal,
 		Story:        r.Story,
 		Deck:         r.Deck,

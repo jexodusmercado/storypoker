@@ -38,9 +38,10 @@ type Hub struct {
 }
 
 type roomEntry struct {
-	room    *Room
-	conns   map[string]*Conn       // participantID → active conn
-	pending map[string]*time.Timer // participantID → grace timer
+	room        *Room
+	conns       map[string]*Conn       // participantID → active conn
+	pending     map[string]*time.Timer // participantID → grace timer
+	revealTimer *time.Timer            // 3s countdown timer; nil unless counting down
 }
 
 func NewHub(graceTTL time.Duration) *Hub {
@@ -159,6 +160,70 @@ func (h *Hub) expireGrace(roomID, participantID string) {
 	h.Broadcast(roomID)
 }
 
+// ScheduleReveal starts the reveal countdown for a room. If a reveal is
+// already counting down or completed, or no one has voted, it's a no-op and
+// returns false. Broadcasts the new state immediately on success.
+func (h *Hub) ScheduleReveal(roomID string, delay time.Duration) bool {
+	h.mu.Lock()
+	e, ok := h.rooms[roomID]
+	if !ok {
+		h.mu.Unlock()
+		return false
+	}
+	if e.revealTimer != nil {
+		h.mu.Unlock()
+		return false
+	}
+	room := e.room
+	at := time.Now().Add(delay).UnixMilli()
+	if !room.StartReveal(at) {
+		h.mu.Unlock()
+		return false
+	}
+	rid := roomID
+	e.revealTimer = time.AfterFunc(delay, func() {
+		h.finalizeReveal(rid)
+	})
+	h.mu.Unlock()
+	h.Broadcast(roomID)
+	return true
+}
+
+// CancelReveal stops a pending countdown (if any) and clears RevealAt. Used
+// by Reset and Revote to make sure the timer never fires after the round
+// state has been wiped.
+func (h *Hub) CancelReveal(roomID string) {
+	h.mu.Lock()
+	e, ok := h.rooms[roomID]
+	if !ok {
+		h.mu.Unlock()
+		return
+	}
+	if e.revealTimer != nil {
+		e.revealTimer.Stop()
+		e.revealTimer = nil
+	}
+	room := e.room
+	h.mu.Unlock()
+	room.CancelReveal()
+}
+
+func (h *Hub) finalizeReveal(roomID string) {
+	h.mu.Lock()
+	e, ok := h.rooms[roomID]
+	if !ok {
+		h.mu.Unlock()
+		return
+	}
+	e.revealTimer = nil
+	room := e.room
+	h.mu.Unlock()
+
+	if room.CompleteReveal() {
+		h.Broadcast(roomID)
+	}
+}
+
 func (h *Hub) Broadcast(roomID string) {
 	h.mu.Lock()
 	e, ok := h.rooms[roomID]
@@ -173,9 +238,11 @@ func (h *Hub) Broadcast(roomID string) {
 	room := e.room
 	h.mu.Unlock()
 
-	state := room.Snapshot()
-	msg := Outbound{Type: MsgState, Payload: state}
+	// Each conn gets its own snapshot so the viewer sees their own vote
+	// pre-reveal while everyone else's vote stays stripped to nil.
 	for _, c := range conns {
+		state := room.SnapshotFor(c.participantID)
+		msg := Outbound{Type: MsgState, Payload: state}
 		if err := c.Send(msg); err != nil {
 			log.Printf("send to %s failed: %v", c.participantID, err)
 		}
