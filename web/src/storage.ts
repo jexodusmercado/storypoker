@@ -15,3 +15,22 @@ export function writeStoredName(name: string) {
     /* localStorage unavailable */
   }
 }
+
+const NUDGE_MUTED_KEY = 'storypoker.nudgeMuted'
+
+export function readNudgeMuted(): boolean {
+  try {
+    return window.localStorage.getItem(NUDGE_MUTED_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+export function writeNudgeMuted(muted: boolean) {
+  try {
+    if (muted) window.localStorage.setItem(NUDGE_MUTED_KEY, '1')
+    else window.localStorage.removeItem(NUDGE_MUTED_KEY)
+  } catch {
+    /* localStorage unavailable */
+  }
+}

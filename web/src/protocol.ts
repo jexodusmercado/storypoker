@@ -44,6 +44,7 @@ export type InboundFromServer =
   | { type: 'state'; payload: StatePayload }
   | { type: 'joined'; payload: JoinedPayload }
   | { type: 'error'; payload: ErrorPayload }
+  | { type: 'nudge'; payload: { targetId: string; fromId: string } }
 
 export type OutboundToServer =
   | {
@@ -64,3 +65,4 @@ export type OutboundToServer =
   | { type: 'setStory'; payload: { story: string } }
   | { type: 'setAutoReveal'; payload: { enabled: boolean } }
   | { type: 'setSpectator'; payload: { spectator: boolean } }
+  | { type: 'nudge'; payload: { targetId: string } }

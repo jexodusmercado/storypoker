@@ -13,6 +13,7 @@ const (
 	MsgSetStory      = "setStory"
 	MsgSetAutoReveal = "setAutoReveal"
 	MsgSetSpectator  = "setSpectator"
+	MsgNudge         = "nudge" // both directions: in {targetId}, out {targetId, fromId}
 
 	MsgState  = "state"
 	MsgJoined = "joined"
@@ -52,6 +53,19 @@ type SetAutoRevealPayload struct {
 
 type SetSpectatorPayload struct {
 	Spectator bool `json:"spectator"`
+}
+
+// NudgePayload is the inbound nudge request: who to buzz.
+type NudgePayload struct {
+	TargetID string `json:"targetId"`
+}
+
+// NudgeEvent is the outbound ephemeral nudge, broadcast to the whole room so
+// the target shakes + buzzes and everyone else sees the target's card shake.
+// Names are resolved client-side from the participant list, so only IDs travel.
+type NudgeEvent struct {
+	TargetID string `json:"targetId"`
+	FromID   string `json:"fromId"`
 }
 
 type StatePayload struct {

@@ -9,6 +9,8 @@ interface OvalTableProps {
   revealed: boolean
   outliers: Set<string>
   centerContent: ReactNode
+  shakingId: string | null
+  onNudge: (id: string) => void
 }
 
 function detectConsensusKey(
@@ -29,6 +31,8 @@ export function OvalTable({
   revealed,
   outliers,
   centerContent,
+  shakingId,
+  onNudge,
 }: OvalTableProps) {
   const consensusKey = useMemo(
     () => detectConsensusKey(voters, revealed),
@@ -114,6 +118,8 @@ export function OvalTable({
                 revealed={revealed}
                 isOutlier={outliers.has(p.id)}
                 flipDelay={i * 0.08}
+                isShaking={p.id === shakingId}
+                onNudge={onNudge}
               />
             </motion.div>
           )
@@ -129,6 +135,8 @@ interface CardProps {
   revealed: boolean
   isOutlier: boolean
   flipDelay: number
+  isShaking: boolean
+  onNudge: (id: string) => void
 }
 
 function ParticipantCardImpl({
@@ -137,16 +145,20 @@ function ParticipantCardImpl({
   revealed,
   isOutlier,
   flipDelay,
+  isShaking,
+  onNudge,
 }: CardProps) {
   // Self always sees their own face. Others see card-back until reveal.
   const selfFaceUp = isSelf && p.vote != null
   const hasFlippableCard = !isSelf && p.hasVoted
+  // Any connected participant other than yourself can be nudged.
+  const canNudge = !isSelf && p.connected
 
   return (
     <div
       className={`flex flex-col items-center gap-1.5 ${
         !p.connected ? 'opacity-50' : ''
-      }`}
+      } ${isShaking ? 'animate-nudge' : ''}`}
     >
       <div data-self-card={isSelf ? 'true' : undefined}>
         {selfFaceUp ? (
@@ -162,7 +174,7 @@ function ParticipantCardImpl({
           <EmptyCard />
         )}
       </div>
-      <div className="flex items-center gap-1 max-w-[6rem]">
+      <div className="flex items-center gap-1 max-w-[7rem]">
         <span
           aria-hidden="true"
           className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
@@ -172,6 +184,17 @@ function ParticipantCardImpl({
         {!p.connected && <span className="sr-only">reconnecting</span>}
         <span className="text-xs text-ink truncate">{p.name}</span>
         {isSelf && <span className="text-[10px] text-ink-soft">(you)</span>}
+        {canNudge && (
+          <button
+            type="button"
+            onClick={() => onNudge(p.id)}
+            aria-label={`Nudge ${p.name}`}
+            title={`Nudge ${p.name}`}
+            className="flex-shrink-0 text-xs leading-none opacity-50 hover:opacity-100 hover:scale-125 focus-visible:opacity-100 transition rounded focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-sage"
+          >
+            👋
+          </button>
+        )}
       </div>
     </div>
   )
@@ -192,7 +215,9 @@ export const ParticipantCard = memo(
     a.isSelf === b.isSelf &&
     a.revealed === b.revealed &&
     a.isOutlier === b.isOutlier &&
-    a.flipDelay === b.flipDelay,
+    a.flipDelay === b.flipDelay &&
+    a.isShaking === b.isShaking &&
+    a.onNudge === b.onNudge,
 )
 
 const CARD_SHAPE = 'w-12 h-16 md:w-14 md:h-20 rounded-md'
@@ -288,23 +313,43 @@ function EmptyCard() {
 
 export const SpectatorsStrip = memo(function SpectatorsStrip({
   spectators,
+  selfId,
+  shakingId,
+  onNudge,
 }: {
   spectators: ParticipantPublic[]
+  selfId: string | null
+  shakingId: string | null
+  onNudge: (id: string) => void
 }) {
   if (spectators.length === 0) return null
   return (
     <aside className="flex flex-wrap items-center justify-center gap-2 text-xs text-ink-muted">
       <span className="uppercase tracking-wide">Viewers:</span>
-      {spectators.map((p) => (
-        <span
-          key={p.id}
-          className={`bg-surface border border-divider rounded px-2 py-1 text-ink ${
-            !p.connected ? 'opacity-50' : ''
-          }`}
-        >
-          {p.name}
-        </span>
-      ))}
+      {spectators.map((p) => {
+        const canNudge = p.id !== selfId && p.connected
+        return (
+          <span
+            key={p.id}
+            className={`inline-flex items-center gap-1 bg-surface border border-divider rounded px-2 py-1 text-ink ${
+              !p.connected ? 'opacity-50' : ''
+            } ${p.id === shakingId ? 'animate-nudge' : ''}`}
+          >
+            {p.name}
+            {canNudge && (
+              <button
+                type="button"
+                onClick={() => onNudge(p.id)}
+                aria-label={`Nudge ${p.name}`}
+                title={`Nudge ${p.name}`}
+                className="leading-none opacity-50 hover:opacity-100 hover:scale-125 focus-visible:opacity-100 transition rounded focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-sage"
+              >
+                👋
+              </button>
+            )}
+          </span>
+        )
+      })}
     </aside>
   )
 })

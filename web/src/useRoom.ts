@@ -13,11 +13,20 @@ export type ConnectionStatus =
   | 'reconnecting'
   | 'error'
 
+// An incoming nudge surfaced to the UI. `seq` increments per event so repeated
+// nudges to the same target still re-trigger the shake/sound effect.
+export interface NudgeEvent {
+  targetId: string
+  fromId: string
+  seq: number
+}
+
 export interface UseRoomResult {
   status: ConnectionStatus
   state: StatePayload | null
   participantId: string | null
   error: string | null
+  nudgeEvent: NudgeEvent | null
   vote: (card: Card) => void
   reveal: () => void
   reset: () => void
@@ -25,6 +34,7 @@ export interface UseRoomResult {
   setStory: (story: string) => void
   setAutoReveal: (enabled: boolean) => void
   setSpectator: (spectator: boolean) => void
+  nudge: (targetId: string) => void
 }
 
 const BACKOFFS_MS = [250, 500, 1000, 2000, 4000, 8000]
@@ -73,6 +83,8 @@ export function useRoom(
   const [state, setState] = useState<StatePayload | null>(null)
   const [participantId, setParticipantId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [nudgeEvent, setNudgeEvent] = useState<NudgeEvent | null>(null)
+  const nudgeSeqRef = useRef(0)
 
   const wsRef = useRef<WebSocket | null>(null)
   const rejoinIdRef = useRef<string | null>(null)
@@ -142,6 +154,14 @@ export function useRoom(
             break
           case 'state':
             setState(msg.payload)
+            break
+          case 'nudge':
+            nudgeSeqRef.current += 1
+            setNudgeEvent({
+              targetId: msg.payload.targetId,
+              fromId: msg.payload.fromId,
+              seq: nudgeSeqRef.current,
+            })
             break
           case 'error':
             setError(msg.payload.message)
@@ -232,12 +252,17 @@ export function useRoom(
       send({ type: 'setSpectator', payload: { spectator } }),
     [send],
   )
+  const nudge = useCallback(
+    (targetId: string) => send({ type: 'nudge', payload: { targetId } }),
+    [send],
+  )
 
   return {
     status,
     state,
     participantId,
     error,
+    nudgeEvent,
     vote,
     reveal,
     reset,
@@ -245,5 +270,6 @@ export function useRoom(
     setStory,
     setAutoReveal,
     setSpectator,
+    nudge,
   }
 }

@@ -26,6 +26,11 @@ const (
 	// usage; burst 60 covers quick double-clicks and short bursts.
 	rateLimitPerSec = 20
 	rateLimitBurst  = 60
+
+	// A given participant can't be nudged more than once per this window, so a
+	// nudge can't be spammed into an annoyance. Comfortably longer than the
+	// client's ~0.6s shake animation.
+	nudgeCooldown = 2 * time.Second
 )
 
 type Conn struct {
@@ -69,6 +74,7 @@ type roomEntry struct {
 	conns       map[string]*Conn       // participantID → active conn
 	pending     map[string]*time.Timer // participantID → grace timer
 	revealTimer *time.Timer            // 3s countdown timer; nil unless counting down
+	lastNudge   map[string]time.Time   // participantID → last time they were nudged (cooldown)
 }
 
 func NewHub(graceTTL time.Duration) *Hub {
@@ -95,9 +101,10 @@ func (h *Hub) GetOrCreateRoom(id string, deck []Card) *Room {
 		return nil
 	}
 	e := &roomEntry{
-		room:    NewRoom(id, deck),
-		conns:   make(map[string]*Conn),
-		pending: make(map[string]*time.Timer),
+		room:      NewRoom(id, deck),
+		conns:     make(map[string]*Conn),
+		pending:   make(map[string]*time.Timer),
+		lastNudge: make(map[string]time.Time),
 	}
 	h.rooms[id] = e
 	log.Printf("room created: %s", id)
@@ -218,6 +225,7 @@ func (h *Hub) expireGrace(roomID, participantID string) {
 	// one). The previous code removed outside the lock, letting a rejoin reuse a
 	// participant we were about to delete — stranding the connection.
 	e.room.RemoveParticipant(participantID)
+	delete(e.lastNudge, participantID)
 	if len(e.conns) == 0 && len(e.pending) == 0 {
 		delete(h.rooms, roomID)
 		roomGone = true
@@ -339,6 +347,41 @@ func (h *Hub) Broadcast(roomID string) {
 		}(c)
 	}
 	wg.Wait()
+}
+
+// Nudge delivers an ephemeral "buzz" for targetID to everyone in the room,
+// subject to a per-target cooldown. It is intentionally NOT room state: nothing
+// is persisted, it's a fire-and-forget event. Silently drops if the room is
+// gone, the target isn't currently connected, or the cooldown hasn't elapsed.
+func (h *Hub) Nudge(roomID, fromID, targetID string) {
+	h.mu.Lock()
+	e, ok := h.rooms[roomID]
+	if !ok {
+		h.mu.Unlock()
+		return
+	}
+	if _, online := e.conns[targetID]; !online {
+		h.mu.Unlock()
+		return // can't buzz someone who isn't here
+	}
+	now := time.Now()
+	if last, seen := e.lastNudge[targetID]; seen && now.Sub(last) < nudgeCooldown {
+		h.mu.Unlock()
+		return
+	}
+	e.lastNudge[targetID] = now
+	conns := make([]*Conn, 0, len(e.conns))
+	for _, c := range e.conns {
+		conns = append(conns, c)
+	}
+	h.mu.Unlock()
+
+	evt := Outbound{Type: MsgNudge, Payload: NudgeEvent{TargetID: targetID, FromID: fromID}}
+	for _, c := range conns {
+		if err := c.Send(evt); err != nil {
+			log.Printf("nudge send to %s failed: %v", redactID(c.participantID), err)
+		}
+	}
 }
 
 // redactID returns a short prefix of a participant ID for logs. Full IDs

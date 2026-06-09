@@ -144,6 +144,8 @@ func handleMessage(hub *Hub, c *Conn, in Inbound) {
 		handleSetAutoReveal(hub, c, in.Payload)
 	case MsgSetSpectator:
 		handleSetSpectator(hub, c, in.Payload)
+	case MsgNudge:
+		handleNudge(hub, c, in.Payload)
 	default:
 		sendError(c, "unknown message type: "+in.Type)
 	}
@@ -338,6 +340,24 @@ func handleSetSpectator(hub *Hub, c *Conn, raw json.RawMessage) {
 	} else {
 		hub.Broadcast(c.roomID)
 	}
+}
+
+func handleNudge(hub *Hub, c *Conn, raw json.RawMessage) {
+	if c.roomID == "" {
+		sendError(c, "not in a room")
+		return
+	}
+	var p NudgePayload
+	if err := json.Unmarshal(raw, &p); err != nil {
+		sendError(c, "bad nudge payload")
+		return
+	}
+	// No-op on a missing target or a self-nudge; the hub validates the target is
+	// actually present and applies the cooldown.
+	if p.TargetID == "" || p.TargetID == c.participantID {
+		return
+	}
+	hub.Nudge(c.roomID, c.participantID, p.TargetID)
 }
 
 func pingLoop(ctx context.Context, ws *websocket.Conn) {

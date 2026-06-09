@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { motion } from 'motion/react'
 import { useRoom, type ConnectionStatus } from '../useRoom'
 import type { Card, HistoryEntry, ParticipantPublic } from '../protocol'
 import { OvalTable, SpectatorsStrip } from './Table'
 import { FlightCard, type FlightSpec } from './FlightCard'
 import { computeOutliers } from '../voteAnalysis'
+import { playNudge, unlockAudio } from '../nudgeSound'
+import { readNudgeMuted, writeNudgeMuted } from '../storage'
 
 interface Props {
   roomId: string
@@ -43,6 +45,8 @@ export function RoomScreen({
     setStory,
     setAutoReveal,
     setSpectator,
+    nudge,
+    nudgeEvent,
   } = useRoom(roomId, name, deck, spectator, create)
 
   const me = state?.participants.find((p) => p.id === participantId) ?? null
@@ -58,6 +62,60 @@ export function RoomScreen({
   useEffect(() => {
     if (state) clockOffsetRef.current = state.serverNow - Date.now()
   }, [state])
+
+  // Nudge: `shakingId` is whose card shakes for everyone; `selfShake` shakes my
+  // whole screen when I'm the target. `muted` silences the buzz (persisted).
+  const [shakingId, setShakingId] = useState<string | null>(null)
+  const [selfShake, setSelfShake] = useState(false)
+  const [muted, setMuted] = useState(readNudgeMuted)
+
+  // Read inside the nudge effect without making it a dependency (so toggling
+  // mute or a re-render can't replay the last nudge).
+  const mutedRef = useRef(muted)
+  const myIdRef = useRef(participantId)
+  useEffect(() => {
+    mutedRef.current = muted
+  }, [muted])
+  useEffect(() => {
+    myIdRef.current = participantId
+  }, [participantId])
+
+  // Browsers block audio until a gesture; arm the context on the first one.
+  useEffect(() => {
+    const arm = () => unlockAudio()
+    window.addEventListener('pointerdown', arm, { once: true })
+    window.addEventListener('keydown', arm, { once: true })
+    return () => {
+      window.removeEventListener('pointerdown', arm)
+      window.removeEventListener('keydown', arm)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!nudgeEvent) return
+    const { targetId } = nudgeEvent
+    setShakingId(targetId)
+    const timers = [window.setTimeout(() => setShakingId(null), 600)]
+    if (targetId === myIdRef.current) {
+      setSelfShake(true)
+      timers.push(window.setTimeout(() => setSelfShake(false), 600))
+      if (!mutedRef.current) playNudge()
+    }
+    return () => timers.forEach((t) => window.clearTimeout(t))
+  }, [nudgeEvent])
+
+  const toggleMuted = (next: boolean) => {
+    setMuted(next)
+    writeNudgeMuted(next)
+  }
+
+  const handleNudge = useCallback(
+    (targetId: string) => {
+      unlockAudio() // this click also arms audio for the nudger
+      nudge(targetId)
+    },
+    [nudge],
+  )
 
   const handleVote = (card: Card, sourceEl: HTMLElement) => {
     const target = document.querySelector<HTMLElement>('[data-self-card]')
@@ -141,7 +199,11 @@ export function RoomScreen({
     : null
 
   return (
-    <div className="min-h-full flex flex-col p-4 sm:p-6 gap-4 sm:gap-6 max-w-4xl mx-auto w-full">
+    <div
+      className={`min-h-full flex flex-col p-4 sm:p-6 gap-4 sm:gap-6 max-w-4xl mx-auto w-full ${
+        selfShake ? 'animate-nudge' : ''
+      }`}
+    >
       {flight && (
         <FlightCard
           key={flight.id}
@@ -231,6 +293,8 @@ export function RoomScreen({
               revealed={state.revealed}
               outliers={outliers}
               centerContent={centerContent}
+              shakingId={shakingId}
+              onNudge={handleNudge}
             />
           ) : (
             <div className="text-ink-muted text-center py-8 bg-surface-muted border border-dashed border-divider rounded-lg">
@@ -238,7 +302,12 @@ export function RoomScreen({
             </div>
           )}
 
-          <SpectatorsStrip spectators={spectators} />
+          <SpectatorsStrip
+            spectators={spectators}
+            selfId={participantId}
+            shakingId={shakingId}
+            onNudge={handleNudge}
+          />
 
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="flex flex-col gap-2">
@@ -261,6 +330,15 @@ export function RoomScreen({
                   className="accent-sage-strong"
                 />
                 Spectate (don't vote)
+              </label>
+              <label className="flex items-center gap-2 text-sm text-ink-muted select-none">
+                <input
+                  type="checkbox"
+                  checked={!muted}
+                  onChange={(e) => toggleMuted(!e.target.checked)}
+                  className="accent-sage-strong"
+                />
+                Nudge sound
               </label>
             </div>
             <button
