@@ -142,6 +142,8 @@ func handleMessage(hub *Hub, c *Conn, in Inbound) {
 		handleSetStory(hub, c, in.Payload)
 	case MsgSetAutoReveal:
 		handleSetAutoReveal(hub, c, in.Payload)
+	case MsgSetSpectator:
+		handleSetSpectator(hub, c, in.Payload)
 	default:
 		sendError(c, "unknown message type: "+in.Type)
 	}
@@ -304,6 +306,34 @@ func handleSetAutoReveal(hub *Hub, c *Conn, raw json.RawMessage) {
 		return
 	}
 	if room.SetAutoReveal(p.Enabled) {
+		hub.ScheduleReveal(c.roomID, revealCountdown)
+	} else {
+		hub.Broadcast(c.roomID)
+	}
+}
+
+func handleSetSpectator(hub *Hub, c *Conn, raw json.RawMessage) {
+	if c.roomID == "" {
+		sendError(c, "not in a room")
+		return
+	}
+	var p SetSpectatorPayload
+	if err := json.Unmarshal(raw, &p); err != nil {
+		sendError(c, "bad setSpectator payload")
+		return
+	}
+	room := hub.Room(c.roomID)
+	if room == nil {
+		sendError(c, "room not found")
+		return
+	}
+	if err := room.SetSpectator(c.participantID, p.Spectator); err != nil {
+		sendError(c, err.Error())
+		return
+	}
+	// Becoming a spectator can newly satisfy auto-reveal: the leaver was the
+	// last non-voter, so everyone still voting has now voted.
+	if room.ShouldAutoReveal() {
 		hub.ScheduleReveal(c.roomID, revealCountdown)
 	} else {
 		hub.Broadcast(c.roomID)

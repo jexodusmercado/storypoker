@@ -12,6 +12,7 @@ const (
 	MsgRevote        = "revote"
 	MsgSetStory      = "setStory"
 	MsgSetAutoReveal = "setAutoReveal"
+	MsgSetSpectator  = "setSpectator"
 
 	MsgState  = "state"
 	MsgJoined = "joined"
@@ -49,10 +50,15 @@ type SetAutoRevealPayload struct {
 	Enabled bool `json:"enabled"`
 }
 
+type SetSpectatorPayload struct {
+	Spectator bool `json:"spectator"`
+}
+
 type StatePayload struct {
 	RoomID       string              `json:"roomId"`
 	Revealed     bool                `json:"revealed"`
-	RevealAt     int64               `json:"revealAt"` // unix ms; 0 unless countdown in progress
+	RevealAt     int64               `json:"revealAt"`  // unix ms; 0 unless countdown in progress
+	ServerNow    int64               `json:"serverNow"` // unix ms at send; lets clients correct clock skew for the countdown
 	AutoReveal   bool                `json:"autoReveal"`
 	Story        string              `json:"story"`
 	Deck         []Card              `json:"deck"`

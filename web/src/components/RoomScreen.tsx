@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { motion } from 'motion/react'
 import { useRoom, type ConnectionStatus } from '../useRoom'
 import type { Card, HistoryEntry, ParticipantPublic } from '../protocol'
@@ -42,6 +42,7 @@ export function RoomScreen({
     revote,
     setStory,
     setAutoReveal,
+    setSpectator,
   } = useRoom(roomId, name, deck, spectator, create)
 
   const me = state?.participants.find((p) => p.id === participantId) ?? null
@@ -49,6 +50,14 @@ export function RoomScreen({
 
   const [flight, setFlight] = useState<FlightSpec | null>(null)
   const flightIdRef = useRef(0)
+
+  // Offset between the server's clock and ours (serverNow - localNow at receipt).
+  // The reveal countdown is driven by the server's absolute revealAt; applying
+  // this offset keeps it accurate even when the client's clock is skewed.
+  const clockOffsetRef = useRef(0)
+  useEffect(() => {
+    if (state) clockOffsetRef.current = state.serverNow - Date.now()
+  }, [state])
 
   const handleVote = (card: Card, sourceEl: HTMLElement) => {
     const target = document.querySelector<HTMLElement>('[data-self-card]')
@@ -69,14 +78,29 @@ export function RoomScreen({
   const isJoined = status === 'joined'
   const showReconnectBanner = !isJoined && state !== null
 
-  const voters =
-    state?.participants.filter((p) => !p.spectator) ?? []
-  const spectators =
-    state?.participants.filter((p) => p.spectator) ?? []
-  const votedCount = voters.filter((p) => p.hasVoted).length
-
-  const outliers =
-    state?.revealed ? computeOutliers(state.participants) : new Set<string>()
+  // Derived view state recomputed only when the room state actually changes,
+  // not on every render (e.g. the flight animation's setState). Stable
+  // identities also let memoized children skip reconciliation.
+  const participants = state?.participants
+  const voters = useMemo(
+    () => participants?.filter((p) => !p.spectator) ?? [],
+    [participants],
+  )
+  const spectators = useMemo(
+    () => participants?.filter((p) => p.spectator) ?? [],
+    [participants],
+  )
+  const votedCount = useMemo(
+    () => voters.filter((p) => p.hasVoted).length,
+    [voters],
+  )
+  const outliers = useMemo(
+    () =>
+      state?.revealed && participants
+        ? computeOutliers(participants)
+        : new Set<string>(),
+    [state?.revealed, participants],
+  )
 
   useEffect(() => {
     const prev = document.title
@@ -100,7 +124,12 @@ export function RoomScreen({
           />
         )
       : state.revealAt > 0
-        ? <CenterCountdown revealAt={state.revealAt} />
+        ? (
+            <CenterCountdown
+              revealAt={state.revealAt}
+              clockOffset={clockOffsetRef.current}
+            />
+          )
         : (
             <CenterIdle
               votedCount={votedCount}
@@ -211,17 +240,29 @@ export function RoomScreen({
 
           <SpectatorsStrip spectators={spectators} />
 
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <label className="flex items-center gap-2 text-sm text-ink-muted select-none">
-              <input
-                type="checkbox"
-                checked={state.autoReveal}
-                onChange={(e) => setAutoReveal(e.target.checked)}
-                disabled={!isJoined}
-                className="accent-sage-strong"
-              />
-              Auto-reveal when everyone has voted
-            </label>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="flex flex-col gap-2">
+              <label className="flex items-center gap-2 text-sm text-ink-muted select-none">
+                <input
+                  type="checkbox"
+                  checked={state.autoReveal}
+                  onChange={(e) => setAutoReveal(e.target.checked)}
+                  disabled={!isJoined}
+                  className="accent-sage-strong"
+                />
+                Auto-reveal when everyone has voted
+              </label>
+              <label className="flex items-center gap-2 text-sm text-ink-muted select-none">
+                <input
+                  type="checkbox"
+                  checked={me?.spectator ?? false}
+                  onChange={(e) => setSpectator(e.target.checked)}
+                  disabled={!isJoined || !me}
+                  className="accent-sage-strong"
+                />
+                Spectate (don't vote)
+              </label>
+            </div>
             <button
               type="button"
               onClick={reset}
@@ -234,8 +275,16 @@ export function RoomScreen({
           </div>
 
           {me?.spectator ? (
-            <div className="text-sm text-ink-muted bg-surface-muted border border-divider rounded-lg px-4 py-3 text-center">
-              You're a spectator — you can watch but not vote.
+            <div className="flex flex-col items-center gap-2 text-sm text-ink-muted bg-surface-muted border border-divider rounded-lg px-4 py-3 text-center">
+              <span>You're a spectator — you can watch but not vote.</span>
+              <button
+                type="button"
+                onClick={() => setSpectator(false)}
+                disabled={!isJoined}
+                className="bg-sage-strong hover:opacity-90 disabled:opacity-50 text-white rounded px-3 py-1.5 text-sm font-medium transition-opacity focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sage"
+              >
+                Start voting
+              </button>
             </div>
           ) : (
             <Deck
@@ -305,8 +354,14 @@ function StoryInput({
   )
 }
 
-function CenterCountdown({ revealAt }: { revealAt: number }) {
-  const remaining = useCountdown(revealAt)
+function CenterCountdown({
+  revealAt,
+  clockOffset,
+}: {
+  revealAt: number
+  clockOffset: number
+}) {
+  const remaining = useCountdown(revealAt, clockOffset)
   const display = remaining > 0 ? String(remaining) : 'Reveal!'
   return (
     <div className="text-center flex flex-col items-center gap-1">
@@ -327,19 +382,20 @@ function CenterCountdown({ revealAt }: { revealAt: number }) {
   )
 }
 
-function useCountdown(revealAt: number): number {
+function useCountdown(revealAt: number, clockOffset = 0): number {
+  // revealAt is on the server clock; serverTime ≈ Date.now() + clockOffset.
   const [remaining, setRemaining] = useState(() =>
-    Math.max(0, Math.ceil((revealAt - Date.now()) / 1000)),
+    Math.max(0, Math.ceil((revealAt - (Date.now() + clockOffset)) / 1000)),
   )
   useEffect(() => {
     const tick = () => {
-      const ms = Math.max(0, revealAt - Date.now())
+      const ms = Math.max(0, revealAt - (Date.now() + clockOffset))
       setRemaining(Math.ceil(ms / 1000))
     }
     tick()
     const id = window.setInterval(tick, 100)
     return () => window.clearInterval(id)
-  }, [revealAt])
+  }, [revealAt, clockOffset])
   return remaining
 }
 
@@ -570,8 +626,8 @@ function History({ entries }: { entries: HistoryEntry[] }) {
         Session history ({entries.length})
       </summary>
       <ul className="divide-y divide-divider">
-        {reversed.map((e) => (
-          <li key={e.at} className="px-4 py-3">
+        {reversed.map((e, i) => (
+          <li key={`${e.at}-${i}`} className="px-4 py-3">
             <div className="flex items-start justify-between gap-3">
               <div className="text-sm text-ink truncate">
                 {e.story || (

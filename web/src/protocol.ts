@@ -13,6 +13,7 @@ export interface StatePayload {
   roomId: string
   revealed: boolean
   revealAt: number
+  serverNow: number
   autoReveal: boolean
   story: string
   deck: Card[]
@@ -62,3 +63,4 @@ export type OutboundToServer =
   | { type: 'revote' }
   | { type: 'setStory'; payload: { story: string } }
   | { type: 'setAutoReveal'; payload: { enabled: boolean } }
+  | { type: 'setSpectator'; payload: { spectator: boolean } }

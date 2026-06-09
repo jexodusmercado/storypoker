@@ -1,4 +1,4 @@
-import { type ReactNode } from 'react'
+import { memo, useMemo, type ReactNode } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import type { ParticipantPublic } from '../protocol'
 import { ConsensusBurst } from './ConsensusBurst'
@@ -30,12 +30,19 @@ export function OvalTable({
   outliers,
   centerContent,
 }: OvalTableProps) {
-  const consensusKey = detectConsensusKey(voters, revealed)
-  const ordered = [...voters].sort((a, b) => {
-    if (a.id === selfId) return -1
-    if (b.id === selfId) return 1
-    return a.id.localeCompare(b.id)
-  })
+  const consensusKey = useMemo(
+    () => detectConsensusKey(voters, revealed),
+    [voters, revealed],
+  )
+  const ordered = useMemo(
+    () =>
+      [...voters].sort((a, b) => {
+        if (a.id === selfId) return -1
+        if (b.id === selfId) return 1
+        return a.id.localeCompare(b.id)
+      }),
+    [voters, selfId],
+  )
 
   return (
     <div className="relative w-full max-w-3xl mx-auto aspect-[4/3] md:aspect-[5/3] mt-4 mb-8 md:my-4">
@@ -124,7 +131,7 @@ interface CardProps {
   flipDelay: number
 }
 
-export function ParticipantCard({
+function ParticipantCardImpl({
   p,
   isSelf,
   revealed,
@@ -169,6 +176,24 @@ export function ParticipantCard({
     </div>
   )
 }
+
+// Each room broadcast parses fresh participant objects, so a plain memo
+// (reference-equal props) would never hit. Compare the fields the card actually
+// renders: when one person votes, the other cards are field-equal and skip
+// re-rendering (and re-running their motion subtrees).
+export const ParticipantCard = memo(
+  ParticipantCardImpl,
+  (a, b) =>
+    a.p.id === b.p.id &&
+    a.p.name === b.p.name &&
+    a.p.hasVoted === b.p.hasVoted &&
+    a.p.connected === b.p.connected &&
+    a.p.vote === b.p.vote &&
+    a.isSelf === b.isSelf &&
+    a.revealed === b.revealed &&
+    a.isOutlier === b.isOutlier &&
+    a.flipDelay === b.flipDelay,
+)
 
 const CARD_SHAPE = 'w-12 h-16 md:w-14 md:h-20 rounded-md'
 
@@ -261,7 +286,7 @@ function EmptyCard() {
   )
 }
 
-export function SpectatorsStrip({
+export const SpectatorsStrip = memo(function SpectatorsStrip({
   spectators,
 }: {
   spectators: ParticipantPublic[]
@@ -282,4 +307,4 @@ export function SpectatorsStrip({
       ))}
     </aside>
   )
-}
+})

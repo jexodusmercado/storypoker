@@ -12,7 +12,10 @@ import (
 )
 
 const (
-	writeTimeout = 5 * time.Second
+	// A state frame is sub-KB; a write that can't drain in this long means a
+	// stalled/dead peer. Kept tight so a bad conn frees its broadcast goroutine
+	// quickly (the ping loop reaps the connection itself).
+	writeTimeout = 3 * time.Second
 
 	// DoS knobs.
 	maxRooms      = 10000         // hard cap on concurrent rooms in the hub
@@ -133,7 +136,7 @@ func (h *Hub) JoinOrRejoin(c *Conn, roomID, rejoinID, name string, spectator boo
 		return "", nil, ErrParticipantNotFound // room gone between create and join
 	}
 
-	if rejoinID != "" && e.room.Reattach(rejoinID) {
+	if rejoinID != "" && e.room.Reattach(rejoinID, name) {
 		participantID = rejoinID
 	} else {
 		p, addErr := e.room.AddParticipant(name, spectator)
@@ -219,13 +222,24 @@ func (h *Hub) expireGrace(roomID, participantID string) {
 		delete(h.rooms, roomID)
 		roomGone = true
 	}
+	room := e.room
 	h.mu.Unlock()
 
 	if roomGone {
 		log.Printf("room gc'd: %s", roomID)
 		return
 	}
-	h.Broadcast(roomID)
+
+	// Removing a voter can newly satisfy the auto-reveal condition: if the
+	// removed participant was the last one yet to vote, everyone still present
+	// has now voted. Re-evaluate so the round doesn't get stranded at
+	// "all-but-one voted" with no one left to trigger it. ScheduleReveal
+	// broadcasts on success, so only broadcast ourselves otherwise.
+	if room.ShouldAutoReveal() {
+		h.ScheduleReveal(roomID, revealCountdown)
+	} else {
+		h.Broadcast(roomID)
+	}
 }
 
 // ScheduleReveal starts the reveal countdown for a room. If a reveal is
@@ -306,15 +320,25 @@ func (h *Hub) Broadcast(roomID string) {
 	room := e.room
 	h.mu.Unlock()
 
-	// Each conn gets its own snapshot so the viewer sees their own vote
-	// pre-reveal while everyone else's vote stays stripped to nil.
+	// Compute the shared room view once, then personalize it per viewer (only
+	// the viewer's own pre-reveal vote differs). Sends fan out concurrently so
+	// one client with a stalled write can't hold up delivery to everyone else
+	// in the room for up to writeTimeout; per-conn writes are still serialized
+	// by Conn.sendMu, and For returns either the shared (read-only) base or a
+	// private copy, so concurrent reads are safe.
+	snap := room.Snapshot()
+	var wg sync.WaitGroup
+	wg.Add(len(conns))
 	for _, c := range conns {
-		state := room.SnapshotFor(c.participantID)
-		msg := Outbound{Type: MsgState, Payload: state}
-		if err := c.Send(msg); err != nil {
-			log.Printf("send to %s failed: %v", redactID(c.participantID), err)
-		}
+		go func(c *Conn) {
+			defer wg.Done()
+			state := snap.For(c.participantID)
+			if err := c.Send(Outbound{Type: MsgState, Payload: state}); err != nil {
+				log.Printf("send to %s failed: %v", redactID(c.participantID), err)
+			}
+		}(c)
 	}
+	wg.Wait()
 }
 
 // redactID returns a short prefix of a participant ID for logs. Full IDs

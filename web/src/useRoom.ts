@@ -24,6 +24,7 @@ export interface UseRoomResult {
   revote: () => void
   setStory: (story: string) => void
   setAutoReveal: (enabled: boolean) => void
+  setSpectator: (spectator: boolean) => void
 }
 
 const BACKOFFS_MS = [250, 500, 1000, 2000, 4000, 8000]
@@ -77,6 +78,7 @@ export function useRoom(
   const rejoinIdRef = useRef<string | null>(null)
   const attemptRef = useRef(0)
   const reconnectTimerRef = useRef<number | null>(null)
+  const errorTimerRef = useRef<number | null>(null)
   const unmountedRef = useRef(false)
   const everJoinedRef = useRef(false)
   const giveUpRef = useRef(false)
@@ -133,6 +135,10 @@ export function useRoom(
             everJoinedRef.current = true
             setStatus('joined')
             setError(null)
+            if (errorTimerRef.current != null) {
+              clearTimeout(errorTimerRef.current)
+              errorTimerRef.current = null
+            }
             break
           case 'state':
             setState(msg.payload)
@@ -144,6 +150,17 @@ export function useRoom(
               setStatus('error')
               writeStoredRejoinId(roomId, null)
               ws.close()
+            } else {
+              // Post-join errors are transient (rate limit, a vote that raced
+              // the reveal countdown, etc.) — the session is still healthy, so
+              // auto-dismiss the banner instead of leaving it stuck until the
+              // next reconnect.
+              if (errorTimerRef.current != null)
+                clearTimeout(errorTimerRef.current)
+              errorTimerRef.current = window.setTimeout(() => {
+                setError(null)
+                errorTimerRef.current = null
+              }, 4000)
             }
             break
         }
@@ -172,6 +189,10 @@ export function useRoom(
       if (reconnectTimerRef.current != null) {
         clearTimeout(reconnectTimerRef.current)
         reconnectTimerRef.current = null
+      }
+      if (errorTimerRef.current != null) {
+        clearTimeout(errorTimerRef.current)
+        errorTimerRef.current = null
       }
       wsRef.current?.close()
       wsRef.current = null
@@ -206,6 +227,11 @@ export function useRoom(
       send({ type: 'setAutoReveal', payload: { enabled } }),
     [send],
   )
+  const setSpectator = useCallback(
+    (spectator: boolean) =>
+      send({ type: 'setSpectator', payload: { spectator } }),
+    [send],
+  )
 
   return {
     status,
@@ -218,5 +244,6 @@ export function useRoom(
     revote,
     setStory,
     setAutoReveal,
+    setSpectator,
   }
 }

@@ -88,13 +88,13 @@ export default function App() {
         >
           <NamePromptModal
             roomId={urlRoom}
-            onSubmit={(name) => {
+            onSubmit={(name, spectator) => {
               writeStoredName(name)
               setSession({
                 roomId: urlRoom,
                 name,
                 deck: [],
-                spectator: false,
+                spectator,
                 create: false,
               })
             }}
