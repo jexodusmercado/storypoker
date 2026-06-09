@@ -1,7 +1,16 @@
 import { memo, useMemo, type ReactNode } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import type { ParticipantPublic } from '../protocol'
+import { useNudgeShake } from '../useNudgeShake'
 import { ConsensusBurst } from './ConsensusBurst'
+
+// Who is currently being nudged + a per-nudge sequence so spam restarts the
+// shake. `seqFor` resolves the sequence for a given participant (0 = not them).
+export type ShakeState = { id: string; seq: number } | null
+
+function seqFor(shake: ShakeState, id: string): number {
+  return shake && shake.id === id ? shake.seq : 0
+}
 
 interface OvalTableProps {
   voters: ParticipantPublic[]
@@ -9,7 +18,7 @@ interface OvalTableProps {
   revealed: boolean
   outliers: Set<string>
   centerContent: ReactNode
-  shakingId: string | null
+  shake: ShakeState
   onNudge: (id: string) => void
 }
 
@@ -31,7 +40,7 @@ export function OvalTable({
   revealed,
   outliers,
   centerContent,
-  shakingId,
+  shake,
   onNudge,
 }: OvalTableProps) {
   const consensusKey = useMemo(
@@ -118,7 +127,7 @@ export function OvalTable({
                 revealed={revealed}
                 isOutlier={outliers.has(p.id)}
                 flipDelay={i * 0.08}
-                isShaking={p.id === shakingId}
+                shakeSeq={seqFor(shake, p.id)}
                 onNudge={onNudge}
               />
             </motion.div>
@@ -135,7 +144,7 @@ interface CardProps {
   revealed: boolean
   isOutlier: boolean
   flipDelay: number
-  isShaking: boolean
+  shakeSeq: number
   onNudge: (id: string) => void
 }
 
@@ -145,7 +154,7 @@ function ParticipantCardImpl({
   revealed,
   isOutlier,
   flipDelay,
-  isShaking,
+  shakeSeq,
   onNudge,
 }: CardProps) {
   // Self always sees their own face. Others see card-back until reveal.
@@ -153,13 +162,12 @@ function ParticipantCardImpl({
   const hasFlippableCard = !isSelf && p.hasVoted
   // Any connected participant other than yourself can be nudged.
   const canNudge = !isSelf && p.connected
+  // Shake wrapper has a constant className so the hook owns the animation class
+  // without React rewriting it mid-shake (and without remounting the card).
+  const shakeRef = useNudgeShake<HTMLDivElement>(shakeSeq)
 
-  return (
-    <div
-      className={`flex flex-col items-center gap-1.5 ${
-        !p.connected ? 'opacity-50' : ''
-      } ${isShaking ? 'animate-nudge' : ''}`}
-    >
+  const body = (
+    <>
       <div data-self-card={isSelf ? 'true' : undefined}>
         {selfFaceUp ? (
           <SelfFaceUpCard vote={p.vote!} isOutlier={isOutlier} />
@@ -184,18 +192,30 @@ function ParticipantCardImpl({
         {!p.connected && <span className="sr-only">reconnecting</span>}
         <span className="text-xs text-ink truncate">{p.name}</span>
         {isSelf && <span className="text-[10px] text-ink-soft">(you)</span>}
-        {canNudge && (
-          <button
-            type="button"
-            onClick={() => onNudge(p.id)}
-            aria-label={`Nudge ${p.name}`}
-            title={`Nudge ${p.name}`}
-            className="flex-shrink-0 text-xs leading-none opacity-50 hover:opacity-100 hover:scale-125 focus-visible:opacity-100 transition rounded focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-sage"
-          >
-            👋
-          </button>
-        )}
       </div>
+    </>
+  )
+
+  const layout = `flex flex-col items-center gap-1.5 ${
+    !p.connected ? 'opacity-50' : ''
+  }`
+
+  return (
+    <div ref={shakeRef}>
+      {canNudge ? (
+        // The whole card + name is the nudge target — tap/click to buzz.
+        <button
+          type="button"
+          onClick={() => onNudge(p.id)}
+          aria-label={`Nudge ${p.name}`}
+          title={`Nudge ${p.name}`}
+          className={`${layout} cursor-pointer rounded-lg transition hover:-translate-y-0.5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sage`}
+        >
+          {body}
+        </button>
+      ) : (
+        <div className={layout}>{body}</div>
+      )}
     </div>
   )
 }
@@ -216,7 +236,7 @@ export const ParticipantCard = memo(
     a.revealed === b.revealed &&
     a.isOutlier === b.isOutlier &&
     a.flipDelay === b.flipDelay &&
-    a.isShaking === b.isShaking &&
+    a.shakeSeq === b.shakeSeq &&
     a.onNudge === b.onNudge,
 )
 
@@ -311,45 +331,67 @@ function EmptyCard() {
   )
 }
 
+function SpectatorChip({
+  p,
+  canNudge,
+  shakeSeq,
+  onNudge,
+}: {
+  p: ParticipantPublic
+  canNudge: boolean
+  shakeSeq: number
+  onNudge: (id: string) => void
+}) {
+  // Outer span has a constant className so the shake hook can own its animation
+  // class without React clobbering it; the inner element carries the styling.
+  const shakeRef = useNudgeShake<HTMLSpanElement>(shakeSeq)
+  const chrome = `inline-flex items-center gap-1 bg-surface border border-divider rounded px-2 py-1 text-ink ${
+    !p.connected ? 'opacity-50' : ''
+  }`
+  return (
+    <span ref={shakeRef} className="inline-block">
+      {canNudge ? (
+        // Tap/click the whole chip to buzz the viewer.
+        <button
+          type="button"
+          onClick={() => onNudge(p.id)}
+          aria-label={`Nudge ${p.name}`}
+          title={`Nudge ${p.name}`}
+          className={`${chrome} cursor-pointer transition hover:-translate-y-0.5 hover:border-sage focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-sage`}
+        >
+          {p.name}
+        </button>
+      ) : (
+        <span className={chrome}>{p.name}</span>
+      )}
+    </span>
+  )
+}
+
 export const SpectatorsStrip = memo(function SpectatorsStrip({
   spectators,
   selfId,
-  shakingId,
+  shake,
   onNudge,
 }: {
   spectators: ParticipantPublic[]
   selfId: string | null
-  shakingId: string | null
+  shake: ShakeState
   onNudge: (id: string) => void
 }) {
   if (spectators.length === 0) return null
   return (
     <aside className="flex flex-wrap items-center justify-center gap-2 text-xs text-ink-muted">
       <span className="uppercase tracking-wide">Viewers:</span>
-      {spectators.map((p) => {
-        const canNudge = p.id !== selfId && p.connected
-        return (
-          <span
-            key={p.id}
-            className={`inline-flex items-center gap-1 bg-surface border border-divider rounded px-2 py-1 text-ink ${
-              !p.connected ? 'opacity-50' : ''
-            } ${p.id === shakingId ? 'animate-nudge' : ''}`}
-          >
-            {p.name}
-            {canNudge && (
-              <button
-                type="button"
-                onClick={() => onNudge(p.id)}
-                aria-label={`Nudge ${p.name}`}
-                title={`Nudge ${p.name}`}
-                className="leading-none opacity-50 hover:opacity-100 hover:scale-125 focus-visible:opacity-100 transition rounded focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-sage"
-              >
-                👋
-              </button>
-            )}
-          </span>
-        )
-      })}
+      {spectators.map((p) => (
+        <SpectatorChip
+          key={p.id}
+          p={p}
+          canNudge={p.id !== selfId && p.connected}
+          shakeSeq={seqFor(shake, p.id)}
+          onNudge={onNudge}
+        />
+      ))}
     </aside>
   )
 })

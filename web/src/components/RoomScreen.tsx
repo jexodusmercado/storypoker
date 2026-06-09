@@ -6,6 +6,7 @@ import { OvalTable, SpectatorsStrip } from './Table'
 import { FlightCard, type FlightSpec } from './FlightCard'
 import { computeOutliers } from '../voteAnalysis'
 import { playNudge, unlockAudio } from '../nudgeSound'
+import { useNudgeShake } from '../useNudgeShake'
 import { readNudgeMuted, writeNudgeMuted } from '../storage'
 
 interface Props {
@@ -63,10 +64,10 @@ export function RoomScreen({
     if (state) clockOffsetRef.current = state.serverNow - Date.now()
   }, [state])
 
-  // Nudge: `shakingId` is whose card shakes for everyone; `selfShake` shakes my
-  // whole screen when I'm the target. `muted` silences the buzz (persisted).
-  const [shakingId, setShakingId] = useState<string | null>(null)
-  const [selfShake, setSelfShake] = useState(false)
+  // Nudge: `shake` carries who is the current target plus the nudge sequence,
+  // so spamming restarts the shake each time rather than no-op'ing while it's
+  // still running. `muted` silences the buzz (persisted).
+  const [shake, setShake] = useState<{ id: string; seq: number } | null>(null)
   const [muted, setMuted] = useState(readNudgeMuted)
 
   // Read inside the nudge effect without making it a dependency (so toggling
@@ -93,16 +94,19 @@ export function RoomScreen({
 
   useEffect(() => {
     if (!nudgeEvent) return
-    const { targetId } = nudgeEvent
-    setShakingId(targetId)
-    const timers = [window.setTimeout(() => setShakingId(null), 600)]
-    if (targetId === myIdRef.current) {
-      setSelfShake(true)
-      timers.push(window.setTimeout(() => setSelfShake(false), 600))
-      if (!mutedRef.current) playNudge()
+    // We never clear `shake` back to null on purpose: useNudgeShake only fires
+    // on a seq *change*, and the shake class self-removes on animationend, so a
+    // lingering {id, seq} causes no repeat animation and needs no timer cleanup.
+    setShake({ id: nudgeEvent.targetId, seq: nudgeEvent.seq })
+    if (nudgeEvent.targetId === myIdRef.current && !mutedRef.current) {
+      playNudge()
     }
-    return () => timers.forEach((t) => window.clearTimeout(t))
   }, [nudgeEvent])
+
+  // Shake my whole screen when I'm the target; the sequence restarts it on spam.
+  const selfShakeRef = useNudgeShake<HTMLDivElement>(
+    shake && shake.id === participantId ? shake.seq : 0,
+  )
 
   const toggleMuted = (next: boolean) => {
     setMuted(next)
@@ -200,9 +204,8 @@ export function RoomScreen({
 
   return (
     <div
-      className={`min-h-full flex flex-col p-4 sm:p-6 gap-4 sm:gap-6 max-w-4xl mx-auto w-full ${
-        selfShake ? 'animate-nudge' : ''
-      }`}
+      ref={selfShakeRef}
+      className="min-h-full flex flex-col p-4 sm:p-6 gap-4 sm:gap-6 max-w-4xl mx-auto w-full"
     >
       {flight && (
         <FlightCard
@@ -293,7 +296,7 @@ export function RoomScreen({
               revealed={state.revealed}
               outliers={outliers}
               centerContent={centerContent}
-              shakingId={shakingId}
+              shake={shake}
               onNudge={handleNudge}
             />
           ) : (
@@ -305,7 +308,7 @@ export function RoomScreen({
           <SpectatorsStrip
             spectators={spectators}
             selfId={participantId}
-            shakingId={shakingId}
+            shake={shake}
             onNudge={handleNudge}
           />
 

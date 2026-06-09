@@ -353,7 +353,7 @@ func handleNudge(hub *Hub, c *Conn, raw json.RawMessage) {
 		return
 	}
 	// No-op on a missing target or a self-nudge; the hub validates the target is
-	// actually present and applies the cooldown.
+	// actually present and connected.
 	if p.TargetID == "" || p.TargetID == c.participantID {
 		return
 	}

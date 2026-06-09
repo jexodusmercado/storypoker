@@ -9,6 +9,10 @@ type WebkitWindow = typeof window & {
 }
 
 let ctx: AudioContext | null = null
+// When the last buzz's tail ends (audio-clock time). Used to cap concurrency:
+// under heavy spam we skip a new buzz while one is still sounding so overlapping
+// voices can't stack into a painfully loud drone. ~one buzz at a time.
+let buzzUntil = 0
 
 function getCtx(): AudioContext | null {
   if (ctx) return ctx
@@ -36,6 +40,12 @@ export function playNudge() {
   if (c.state === 'suspended') void c.resume()
 
   const start = c.currentTime
+  // Single-voice cap: if a previous buzz is still sounding, drop this one rather
+  // than layering another set of oscillators on top (spam would otherwise pile
+  // up into an ever-louder drone). The shake still fires; only the audio coalesces.
+  if (start < buzzUntil) return
+  const tail = 0.18 + 0.15 // last pulse's onset + its stop offset
+  buzzUntil = start + tail
   // Two short low-frequency pulses, ~the cadence of a phone buzz.
   for (let i = 0; i < 2; i++) {
     const t0 = start + i * 0.18

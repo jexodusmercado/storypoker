@@ -1,60 +1,96 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/coder/websocket"
 )
 
-// TestNudgeCooldownAndTargeting checks the two pieces of logic Hub.Nudge adds
-// on top of a plain room broadcast: it only buzzes targets that are actually
-// connected, and it enforces a per-target cooldown so a nudge can't be spammed.
-// (fakeConn.Send no-ops on a nil ws, so we assert via the cooldown bookkeeping
-// rather than the wire.)
-func TestNudgeCooldownAndTargeting(t *testing.T) {
+// TestNudgeSpamBroadcasts drives two real websocket clients through the handler
+// and asserts that (a) a nudge reaches everyone in the room with the right
+// {targetId, fromId} shape, and (b) rapid repeats are all delivered — i.e.
+// there is no per-target cooldown, nudges are spammable.
+func TestNudgeSpamBroadcasts(t *testing.T) {
 	hub := NewHub(time.Hour)
-	hub.GetOrCreateRoom("r", DefaultDeck)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ws", wsHandler(hub, &websocket.AcceptOptions{InsecureSkipVerify: true}))
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws"
 
-	a := fakeConn()
-	aid, _, err := hub.JoinOrRejoin(a, "r", "", "Alice", false)
-	if err != nil {
-		t.Fatalf("join a: %v", err)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	dial := func() *websocket.Conn {
+		c, _, err := websocket.Dial(ctx, wsURL, nil)
+		if err != nil {
+			t.Fatalf("dial: %v", err)
+		}
+		return c
 	}
-	b := fakeConn()
-	bid, _, err := hub.JoinOrRejoin(b, "r", "", "Bob", false)
-	if err != nil {
-		t.Fatalf("join b: %v", err)
+	send := func(c *websocket.Conn, v any) {
+		b, _ := json.Marshal(v)
+		if err := c.Write(ctx, websocket.MessageText, b); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+	// readType returns the payload of the next frame of the wanted type, skipping
+	// the interleaved state broadcasts, or fails the test on timeout.
+	readType := func(c *websocket.Conn, want string, d time.Duration) json.RawMessage {
+		rctx, rcancel := context.WithTimeout(ctx, d)
+		defer rcancel()
+		for {
+			_, data, err := c.Read(rctx)
+			if err != nil {
+				t.Fatalf("read %q: %v", want, err)
+			}
+			var m struct {
+				Type    string          `json:"type"`
+				Payload json.RawMessage `json:"payload"`
+			}
+			if json.Unmarshal(data, &m) != nil || m.Type != want {
+				continue
+			}
+			return m.Payload
+		}
+	}
+	idOf := func(c *websocket.Conn) string {
+		var jp struct {
+			ParticipantID string `json:"participantId"`
+		}
+		_ = json.Unmarshal(readType(c, "joined", 2*time.Second), &jp)
+		return jp.ParticipantID
 	}
 
-	lastNudge := func(id string) (time.Time, bool) {
-		hub.mu.Lock()
-		defer hub.mu.Unlock()
-		ts, ok := hub.rooms["r"].lastNudge[id]
-		return ts, ok
+	a := dial()
+	defer a.Close(websocket.StatusNormalClosure, "")
+	send(a, map[string]any{"type": "join", "payload": map[string]any{"roomId": "r", "name": "A", "create": true}})
+	aid := idOf(a)
+
+	b := dial()
+	defer b.Close(websocket.StatusNormalClosure, "")
+	send(b, map[string]any{"type": "join", "payload": map[string]any{"roomId": "r", "name": "B"}})
+	bid := idOf(b)
+
+	const spam = 5
+	for i := 0; i < spam; i++ {
+		send(a, map[string]any{"type": "nudge", "payload": map[string]any{"targetId": bid}})
 	}
 
-	// Alice nudges Bob → records a cooldown stamp for Bob.
-	hub.Nudge("r", aid, bid)
-	first, ok := lastNudge(bid)
-	if !ok {
-		t.Fatal("nudge did not record a cooldown stamp for the target")
-	}
-
-	// A second nudge within the cooldown window is dropped (stamp unchanged).
-	hub.Nudge("r", aid, bid)
-	if second, _ := lastNudge(bid); !second.Equal(first) {
-		t.Fatal("nudge within the cooldown window should have been dropped")
-	}
-
-	// Nudging someone who isn't in the room is a no-op.
-	hub.Nudge("r", aid, "ghost")
-	if _, ok := lastNudge("ghost"); ok {
-		t.Fatal("nudging an absent target should record nothing")
-	}
-
-	// When the target leaves, their cooldown bookkeeping is cleaned up.
-	hub.Detach(b)
-	hub.expireGrace("r", bid)
-	if _, ok := lastNudge(bid); ok {
-		t.Fatal("cooldown entry should be deleted when the participant is removed")
+	for i := 0; i < spam; i++ {
+		var ev struct {
+			TargetID string `json:"targetId"`
+			FromID   string `json:"fromId"`
+		}
+		_ = json.Unmarshal(readType(b, "nudge", 2*time.Second), &ev)
+		if ev.TargetID != bid || ev.FromID != aid {
+			t.Fatalf("nudge %d: got target=%q from=%q, want target=%q from=%q", i, ev.TargetID, ev.FromID, bid, aid)
+		}
 	}
 }
