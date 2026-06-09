@@ -41,6 +41,9 @@ func NewConn(ws *websocket.Conn) *Conn {
 }
 
 func (c *Conn) Send(msg Outbound) error {
+	if c.ws == nil {
+		return nil
+	}
 	data, err := json.Marshal(msg)
 	if err != nil {
 		return err
@@ -107,24 +110,48 @@ func (h *Hub) Room(id string) *Room {
 	return nil
 }
 
-// Attach registers c as the active conn for c.participantID in c.roomID.
-// If a pending grace timer exists for this participant, it is canceled.
-// If another conn was already active for this participant, it is returned
-// so the caller can close it after releasing the hub mutex.
-func (h *Hub) Attach(c *Conn) (kicked *Conn) {
+// JoinOrRejoin atomically resolves a (re)join and registers c as the active
+// conn for the resolved participant. It holds hub.mu for the entire decision so
+// that a concurrent grace expiry (which also takes hub.mu) can never interleave:
+// either the participant is reused before the reaper runs, or the reaper has
+// already removed them and we fall through to creating a fresh participant —
+// never the stranded-ghost / duplicate states the previous split-lock path
+// allowed.
+//
+//   - rejoinID names a still-present participant → reuse it, cancel its grace
+//     timer, mark connected.
+//   - otherwise → create a fresh participant (its vote/identity start clean,
+//     which is the expected outcome once a grace window has lapsed).
+//
+// Returns the resolved participant ID and any older conn for that participant
+// that must be closed by the caller after locks are released.
+func (h *Hub) JoinOrRejoin(c *Conn, roomID, rejoinID, name string, spectator bool) (participantID string, kicked *Conn, err error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	e, ok := h.rooms[c.roomID]
+	e, ok := h.rooms[roomID]
 	if !ok {
-		return nil
+		return "", nil, ErrParticipantNotFound // room gone between create and join
 	}
-	if timer, ok := e.pending[c.participantID]; ok {
+
+	if rejoinID != "" && e.room.Reattach(rejoinID) {
+		participantID = rejoinID
+	} else {
+		p, addErr := e.room.AddParticipant(name, spectator)
+		if addErr != nil {
+			return "", nil, addErr
+		}
+		participantID = p.ID
+	}
+
+	if timer, ok := e.pending[participantID]; ok {
 		timer.Stop()
-		delete(e.pending, c.participantID)
+		delete(e.pending, participantID)
 	}
-	kicked = e.conns[c.participantID]
-	e.conns[c.participantID] = c
-	return kicked
+	c.roomID = roomID
+	c.participantID = participantID
+	kicked = e.conns[participantID]
+	e.conns[participantID] = c
+	return participantID, kicked, nil
 }
 
 // Detach is called when a conn's read loop ends. If this conn is still the
@@ -161,7 +188,6 @@ func (h *Hub) Detach(c *Conn) {
 }
 
 func (h *Hub) expireGrace(roomID, participantID string) {
-	var room *Room
 	var roomGone bool
 
 	h.mu.Lock()
@@ -175,14 +201,25 @@ func (h *Hub) expireGrace(roomID, participantID string) {
 		return
 	}
 	delete(e.pending, participantID)
-	room = e.room
+
+	// If the participant reconnected while this timer was firing, a conn is now
+	// registered for them (JoinOrRejoin runs under the same hub.mu). Keep them.
+	if _, hasConn := e.conns[participantID]; hasConn {
+		h.mu.Unlock()
+		return
+	}
+
+	// Remove the participant while still holding hub.mu so that a concurrent
+	// JoinOrRejoin observes a consistent state: it either sees the participant
+	// present (and reuses it before we get here) or absent (and creates a fresh
+	// one). The previous code removed outside the lock, letting a rejoin reuse a
+	// participant we were about to delete — stranding the connection.
+	e.room.RemoveParticipant(participantID)
 	if len(e.conns) == 0 && len(e.pending) == 0 {
 		delete(h.rooms, roomID)
 		roomGone = true
 	}
 	h.mu.Unlock()
-
-	room.RemoveParticipant(participantID)
 
 	if roomGone {
 		log.Printf("room gc'd: %s", roomID)

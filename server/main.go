@@ -182,22 +182,16 @@ func handleJoin(hub *Hub, c *Conn, raw json.RawMessage) {
 		return
 	}
 
-	var participantID string
-	if p.RejoinID != "" && room.HasParticipant(p.RejoinID) {
-		participantID = p.RejoinID
-		room.SetConnected(participantID, true)
-	} else {
-		participant, err := room.AddParticipant(p.Name, p.Spectator)
-		if err != nil {
+	participantID, kicked, err := hub.JoinOrRejoin(c, p.RoomID, p.RejoinID, p.Name, p.Spectator)
+	if err != nil {
+		if errors.Is(err, ErrRoomFull) {
 			sendError(c, "room is full")
-			return
+		} else {
+			sendError(c, "room not found")
 		}
-		participantID = participant.ID
+		return
 	}
-
-	c.roomID = p.RoomID
-	c.participantID = participantID
-	if kicked := hub.Attach(c); kicked != nil {
+	if kicked != nil {
 		_ = kicked.ws.Close(websocket.StatusGoingAway, "replaced by newer connection")
 	}
 

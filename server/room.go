@@ -133,13 +133,6 @@ func (r *Room) RemoveParticipant(id string) {
 	delete(r.Participants, id)
 }
 
-func (r *Room) HasParticipant(id string) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	_, ok := r.Participants[id]
-	return ok
-}
-
 func (r *Room) SetConnected(id string, connected bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -152,6 +145,25 @@ func (r *Room) SetConnected(id string, connected bool) {
 		p.LastSeen = time.Now()
 		r.touchActivity()
 	}
+}
+
+// Reattach marks an existing participant as connected and returns true. Returns
+// false if no such participant exists — e.g. their grace window already expired
+// and the reaper removed them. Used by the rejoin path so the "is this
+// participant still here?" check and the "claim it" mutation happen under a
+// single r.mu acquisition (the caller holds hub.mu across the whole rejoin, so
+// a concurrent grace expiry cannot slip a removal between check and claim).
+func (r *Room) Reattach(id string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	p, ok := r.Participants[id]
+	if !ok {
+		return false
+	}
+	p.Connected = true
+	p.LastSeen = time.Now()
+	r.touchActivity()
+	return true
 }
 
 func (r *Room) IsEmpty() bool {
